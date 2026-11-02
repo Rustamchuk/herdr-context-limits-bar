@@ -22,6 +22,7 @@
 | --- | --- |
 | 🧠 **Context fill** | Per agent in the tab: a mini bar, percent and tokens. Green → yellow → red as it fills. |
 | ⏳ **Limit windows** | Your 5h / 7d subscription windows with time until reset. |
+| 🪧 **Sidebar** | Context and limit per agent right in herdr's sidebar. |
 | 🔮 **Burn warning** | `⚠~3h` appears when your current pace hits 100% before the window resets. |
 | 🪟 **Auto-open** | Appears at the bottom of a tab when an agent starts there. Once per tab. |
 | 🧩 **Zero dependencies** | One Python file, standard library only. |
@@ -33,14 +34,16 @@
 **1. Install the plugin**
 
 ```bash
-herdr plugin install Rustamchuk/context-limits-bar --yes
+herdr plugin install Rustamchuk/herdr-context-limits-bar --yes
 ```
 
-**2. (Optional, for limits) install the usage plugin**
+**2. Run the setup once**
 
 ```bash
-herdr plugin install silverwolfdoc/herdr-usage-bar --yes
+herdr plugin action invoke context-limits-bar.setup
 ```
+
+It connects everything in one go: Claude Code limits, the sidebar rows and the `ctrl+shift+b` hotkey. It never overwrites your own settings, and running it again changes nothing.
 
 **3. Start an agent** in any herdr tab. The bar appears at the bottom. Done. 🎉
 
@@ -50,25 +53,35 @@ Check it is enabled any time with `herdr plugin list`.
 
 ## 🎮 Usage
 
-| Action | How |
-| --- | --- |
-| 🤖 **Automatic** | Start Claude Code, Codex or another agent in a tab. |
-| 🖐️ **Manual** | `herdr plugin action invoke context-limits-bar.open-bar` |
-| ⌨️ **Keybinding** | See below. |
+The bar appears in tabs that run **Claude Code** or **Codex**. Other agents and plain terminal tabs get no bar.
 
-Add a shortcut to `~/.config/herdr/config.toml`:
+| Event | What happens |
+| --- | --- |
+| 🤖 An agent starts in a tab | The bar opens at the bottom of that tab. |
+| 💬 Each agent reply | The bar comes back if it was closed. |
+| ❌ You close the bar | It stays closed until the next reply or the hotkey below. |
+| 🧹 You close the agent's pane | Its bar closes with it. |
+| 🛑 The agent exits (for example Ctrl+C) | Its bar closes. The shell pane stays. |
+
+### ⌨️ Hotkey: bring the bar back
+
+Add this to `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
 key = "ctrl+shift+b"
 type = "plugin_action"
 command = "context-limits-bar.open-bar"
-description = "Context & limits bar in this tab"
+description = "Context & limits bar: open in this tab"
 ```
 
-Then run `herdr server reload-config`.
+Then run `herdr server reload-config`. Press `ctrl+shift+b` in any pane of a tab with an agent. The bar opens if it is missing. If the tab already has one, nothing happens.
 
-The bar is idempotent: opening it in a tab that already has one does nothing.
+You can also run it from the command line:
+
+```bash
+herdr plugin action invoke context-limits-bar.open-bar
+```
 
 ---
 
@@ -86,13 +99,10 @@ The bar is idempotent: opening it in a tab that already has one does nothing.
                             └ 5-hour Claude window
 ```
 
-| Icon | Agent |
-| :---: | --- |
-| ✳ | Claude Code |
-| ◉ | Codex |
-| ◆ | OpenCode |
-| 𝕏 | Grok |
-| • | anything else |
+| Icon | Agent | Context | Limits |
+| :---: | --- | --- | --- |
+| ✳ | Claude Code | from the session transcript | Claude 5h / 7d |
+| ◉ | Codex | from the session rollout | Codex 7d (OpenAI plan) |
 
 **Bar colors:** 🟢 under 50 % · 🟡 50 – 79 % · 🔴 80 % and up.
 
@@ -100,26 +110,48 @@ The bar is idempotent: opening it in a tab that already has one does nothing.
 
 ---
 
-## 🧠 Claude limits (5h / 7d)
+## 🪧 Sidebar
 
-Claude Code shares its limits through a status line hook. Add this to `~/.claude/settings.json`, using the path from `herdr plugin list` for the usage plugin:
+The plugin fills three sidebar tokens for every agent pane. The setup step adds these rows to `~/.config/herdr/config.toml` for you. If you already have a `[ui.sidebar.agents]` table, merge them into it by hand:
 
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "bash '/path/to/herdr-usage-bar/bin/run-statusline.sh'"
-  }
-}
+```toml
+[ui.sidebar.agents]
+row_gap = 0
+rows = [
+  ["state_icon", "tab", "pane"],
+  ["$provider", "$limit"],
+  ["$context"],
+]
 ```
 
-Limits refresh while you use Claude Code. If you have not used Claude for a while, its percentages are old.
+Setup runs `herdr server reload-config` itself. Run `herdr server reload-config` after a manual change.
+
+| Token | Example | Meaning |
+| --- | --- | --- |
+| `$provider` | `claude` | Agent name |
+| `$limit` | `5h 6%` | Used share of the most relevant limit window |
+| `$context` | `⛁ 291k` | Tokens in the current session context |
+
+Tokens update when an agent changes status, so they follow each reply.
+
+---
+
+## 🧠 Claude limits (5h / 7d)
+
+Claude Code shares its limits with a status line command. The setup step writes that command into `~/.claude/settings.json` for you:
+
+- If Claude Code has no status line yet, it is added. A backup of `settings.json` is written first.
+- If a different status line is already set, nothing changes. Run the action with `--force` to replace it.
+
+The limits refresh while you use Claude Code. If you have not used Claude for a while, the 5h / 7d numbers are old. After a plugin update, run the setup again so the path stays correct.
+
+Codex limits need no setup. They are read from its local session logs.
 
 ---
 
 ## ⚙️ Configuration
 
-Optional. Copy the example into the plugin's config directory:
+Defaults work out of the box. To change them, copy the example into the plugin's config directory:
 
 ```bash
 cp config.example.toml "$(herdr plugin config-dir context-limits-bar)/config.toml"
@@ -135,8 +167,8 @@ Environment overrides:
 
 | Variable | Purpose |
 | --- | --- |
-| `USAGEBAR_BIN` | Path to the usage plugin's binary, if it is not found automatically. |
 | `CLAUDE_CONFIG_DIR` | Claude config directory, if not `~/.claude`. |
+| `CODEX_HOME` | Codex directory, if not `~/.codex`. |
 | `CONTEXT_LIMITS_BAR_RESIZE` | Bar height as a split ratio (default `0.42`). |
 
 ---
@@ -146,10 +178,13 @@ Environment overrides:
 | You see | Cause | Fix |
 | --- | --- | --- |
 | No bar when an agent starts | Plugin disabled, or the event did not fire | `herdr plugin list`, then `herdr plugin log list --plugin context-limits-bar` |
-| `context: —` | The agent does not report token counts. Today only Claude does. | Expected for other agents. |
-| `limits: usagebar not found` | Usage plugin not installed | Install it, or set `USAGEBAR_BIN`. |
-| `limits: no data` | No provider reports an active window | Run `usagebar collect --all` to check. |
+| Bar stays closed | You closed it and no reply has come yet | Send a message to the agent, or press `ctrl+shift+b` |
+| No bar in a plain terminal tab | Expected: the bar only shows in tabs with an agent | Press the hotkey in an agent tab |
+| `context: —` | No token data for the agent yet | Send a message to the agent. Codex needs at least one completed turn. |
+| `limits: no data` | No live Claude or Codex window found | Use Claude Code once after running the statusLine action, or use Codex once. |
 | Claude numbers look old | Claude Code has not run recently | Use Claude Code once. |
+| Claude numbers missing | statusLine not connected | Run `context-limits-bar.setup` again. |
+| Sidebar shows nothing | Rows were not added (for example, you already had a `[ui.sidebar.agents]` table) | Merge the rows from [Sidebar](#-sidebar) into it, then `herdr server reload-config`. |
 | Bar is 4 rows tall | herdr's minimum height for a split pane | Not configurable. |
 
 ---
@@ -157,16 +192,21 @@ Environment overrides:
 ## 🗂️ How it works
 
 ```
-herdr-plugin.toml      manifest: one event + one action
-bin/open-bar.sh        opens the bar in a tab (event and action entry point)
-bin/statusbar.py       draws the bar and refreshes it in place
-config.example.toml    optional settings
-assets/preview.svg     the picture above
+herdr-plugin.toml          manifest: one event, two actions
+bin/bar_manager.py         opens the bar, closes it with its pane, one bar per tab
+bin/statusbar.py           draws the bar and refreshes it in place
+bin/limits.py              reads Claude and Codex limit windows
+bin/statusline.py          Claude Code statusLine command (stores limits)
+bin/sidebar.py             publishes sidebar tokens for agent panes
+bin/install-statusline.py  connects statusline.py to Claude Code settings
+bin/setup.py               one-step setup: statusLine, sidebar rows, hotkey
+config.example.toml        settings (defaults work)
+assets/preview.svg         the picture above
 ```
 
 1. herdr fires `pane.agent_detected` when an agent appears.
-2. `open-bar.sh` splits that pane and runs `statusbar.py` in the new pane.
-3. `statusbar.py` reads the tab's agents from `herdr agent list`, reads limits from the usage plugin, and redraws every 15 seconds.
+2. `bar_manager.py` opens the bar only in tabs with an agent. The bar is a split of that agent's pane. When that pane closes (`pane.closed`), the bar closes too.
+3. `statusbar.py` reads the tab's agents from `herdr agent list`, reads limits through `limits.py`, and redraws every 15 seconds.
 
 Pace samples are kept for one hour in the plugin's state directory. The `⚠` warning needs about 5 minutes of samples before it can appear.
 
@@ -175,8 +215,10 @@ Pace samples are kept for one hour in the plugin's state directory. The `⚠` wa
 ## 🚧 Known limits
 
 - Context percentages are approximate until `context_window_tokens` matches your model.
-- Only Claude reports context tokens to herdr today.
-- Cursor, OpenCode and Grok limits are not shown yet (no usable data source).
+- herdr does not report Codex session ids, so Codex context is matched by working folder. If two Codex sessions run in the same folder, the bar shows the most recently updated one.
+- Only Claude Code and Codex are supported. Other agents get no bar.
+- The sidebar `$limit` shows *used* percent, the same as the bar.
+- Codex context is the input size of its last turn, which Codex also uses for its own context display.
 
 ---
 

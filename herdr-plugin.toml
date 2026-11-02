@@ -7,11 +7,41 @@ platforms = ["macos", "linux"]
 
 [[events]]
 on = "pane.agent_detected"
-command = ["bash", "bin/open-bar.sh"]
+command = ["python3", "bin/bar_manager.py", "open"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["python3", "bin/sidebar.py"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "bin/bar_manager.py", "open"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "bin/sidebar.py"]
+
+[[events]]
+on = "pane.closed"
+command = ["python3", "bin/bar_manager.py", "closed"]
 
 [[actions]]
 id = "open-bar"
 title = "Open context & limits bar in this tab"
 contexts = ["workspace", "pane"]
 platforms = ["macos", "linux"]
-command = ["bash", "bin/open-bar.sh"]
+command = ["python3", "bin/bar_manager.py", "open"]
+
+[[actions]]
+id = "install-statusline"
+title = "Connect Claude Code limits to the bar (statusLine)"
+contexts = ["workspace", "pane"]
+platforms = ["macos", "linux"]
+command = ["python3", "bin/install-statusline.py"]
+
+[[actions]]
+id = "setup"
+title = "Set up Context & Limits Bar (statusLine, sidebar rows, hotkey)"
+contexts = ["workspace", "pane"]
+platforms = ["macos", "linux"]
+command = ["python3", "bin/setup.py"]

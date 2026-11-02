@@ -2,8 +2,7 @@
 """Bottom bar for one herdr tab.
 
 Left:  context fill of agents in this tab (herdr `tokens.context`).
-Right: subscription limit windows (usagebar `collect --all`, plus the fresher
-       Claude statusLine cache), each with reset time and a pace warning.
+Right: subscription limit windows (Claude, Codex) with reset time and a pace warning.
 
 Stdlib only. Config: $HERDR_PLUGIN_CONFIG_DIR/config.toml (optional).
 """
@@ -15,18 +14,19 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import limits  # noqa: E402
+
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
 CONFIG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or os.path.expanduser(
     "~/.config/herdr/plugins/config/context-limits-bar")
 STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(
     "~/.local/state/herdr/plugins/context-limits-bar")
-USAGEBAR = os.environ.get("USAGEBAR_BIN") or ""
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 SAMPLES = os.path.join(STATE_DIR, "samples.json")
 
 DEFAULTS = {"context_window_tokens": 800000, "refresh_seconds": 15, "bar_cells": 5}
 ICONS = {"claude": "✳", "codex": "◉", "opencode": "◆", "grok": "𝕏"}
-WINDOW_LABEL = {300: "5h", 10080: "7d"}
 PACE_MIN_SPAN_S = 300   # projection needs >= 5 min of samples
 PACE_KEEP_S = 3600      # samples kept for 1 h
 ANSI = {"ok": "32", "warn": "33", "high": "31"}
@@ -100,13 +100,19 @@ def agents_in_tab(tab_id):
     return [a for a in agents if a.get("tab_id") == tab_id]
 
 
+SUPPORTED = ("claude", "codex")
+
+
 def render_context(agents, cfg):
-    window = cfg["context_window_tokens"]
     parts = []
     for a in agents:
-        tokens = parse_tokens((a.get("tokens") or {}).get("context"))
+        if a.get("agent") not in SUPPORTED:
+            continue
+        tokens_map = a.get("tokens") or {}
+        tokens = parse_tokens(tokens_map.get("context"))
         if tokens is None:
             continue
+        window = int(tokens_map["window"]) if str(tokens_map.get("window", "")).isdigit() else cfg["context_window_tokens"]
         percent = min(100, round(tokens / window * 100))
         icon = ICONS.get(a.get("agent", ""), "•")
         parts.append("%s %s %d%% %s" % (icon, colored_bar(percent, cfg["bar_cells"]), percent, fmt_tokens(tokens)))
@@ -114,35 +120,6 @@ def render_context(agents, cfg):
 
 
 # ---------- limits (right) ----------
-
-def claude_cache_path():
-    return os.path.join(CLAUDE_DIR, "herdr-usagebar", "claude-limits-latest.json")
-
-
-def collect_limits():
-    if not USAGEBAR:
-        return None
-    try:
-        out = subprocess.run([USAGEBAR, "collect", "--all"], capture_output=True, text=True, timeout=20).stdout
-        providers = json.loads(out).get("providers", [])
-    except Exception:
-        return None
-    # usagebar prefers a stale ~/.claude.json value; use the statusLine cache when it is fresher.
-    try:
-        with open(claude_cache_path()) as f:
-            cache = json.load(f)
-        for p in providers:
-            if (p.get("ProviderID") or "").lower().startswith("claude") and \
-                    cache.get("fetchedAtMs", 0) > (p.get("FetchedAtMs") or 0):
-                if cache.get("fiveHour"):
-                    p["Primary"] = cache["fiveHour"]
-                if cache.get("sevenDay"):
-                    p["Secondary"] = cache["sevenDay"]
-                p["Note"] = None
-    except (OSError, ValueError):
-        pass
-    return providers
-
 
 def load_samples():
     try:
@@ -172,26 +149,21 @@ def minutes_to_full(samples, key, used, now):
     return (100 - used) / rate / 60
 
 
-def render_limits(providers, samples, now):
-    if providers is None:
-        return "limits: usagebar not found"
+def render_limits(data, samples, now, providers):
     items = []
-    for p in providers:
-        pid = (p.get("ProviderID") or "").lower()
-        icon = ICONS.get(next((k for k in ICONS if pid.startswith(k)), ""), "•")
-        for slot in ("Primary", "Secondary", "Tertiary"):
-            win = p.get(slot)
+    for provider in SUPPORTED:
+        if provider not in providers:
+            continue
+        for label in ("5h", "7d"):
+            win = data.get(provider, {}).get(label)
             if not win:
                 continue
-            resets = win.get("resetsAt")
-            if resets and resets <= now:
-                continue
-            used = round(float(win.get("usedPercentage", 0)))
-            label = WINDOW_LABEL.get(win.get("windowMinutes") or 0, "")
-            key = "%s:%s" % (pid, slot)
+            used = win["used"]
+            resets = win["resets_at"]
+            key = "%s:%s" % (provider, label)
             samples.setdefault(key, []).append([now, used])
             samples[key] = [s for s in samples[key] if now - s[0] <= PACE_KEEP_S]
-            text = "%s%s %s %d%%" % (icon, label, colored_bar(used, 5), used)
+            text = "%s%s %s %d%%" % (ICONS[provider], label, colored_bar(used, 5), used)
             if resets:
                 text += " ↻%s" % fmt_dur(resets - now)
                 to_full = minutes_to_full(samples, key, used, now)
@@ -208,19 +180,56 @@ def compose(left, right, width):
     return left + " " * gap + right if gap >= 2 else left + "  ·  " + right
 
 
+def pane_has_agent(pane_id):
+    """True/False when herdr knows the pane; None when the query failed."""
+    try:
+        out = subprocess.run([HERDR, "pane", "get", pane_id], capture_output=True, text=True, timeout=10)
+        if out.returncode != 0:
+            return False  # pane is gone
+        pane = json.loads(out.stdout)["result"]["pane"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return None
+    return bool(pane.get("agent"))
+
+
+def close_self():
+    bar = os.environ.get("HERDR_BAR_PANE", "")
+    if bar:
+        subprocess.run([HERDR, "pane", "close", bar], capture_output=True, timeout=10)
+
+
 def main():
     tab = os.environ.get("HERDR_TAB_ID", "")
+    anchor = os.environ.get("HERDR_ANCHOR_PANE", "")
+    misses = 0
+    next_draw = 0.0
+    cfg = load_config()
     while True:
-        cfg = load_config()
+        if anchor:
+            # The bar belongs to the agent: when it exits (e.g. Ctrl+C), the bar closes.
+            has = pane_has_agent(anchor)
+            if has is False:
+                misses += 1
+                if misses >= 2:
+                    close_self()
+                    return
+            elif has:
+                misses = 0
         now = time.time()
-        samples = load_samples()
-        left = render_context(agents_in_tab(tab), cfg)
-        right = render_limits(collect_limits(), samples, now)
-        save_samples(samples)
-        width = shutil.get_terminal_size((120, 4)).columns
-        sys.stdout.write("\x1b[2K\r" + compose(left, right, width - 1))
-        sys.stdout.flush()
-        time.sleep(max(5, cfg["refresh_seconds"]))
+        if now >= next_draw:
+            cfg = load_config()
+            samples = load_samples()
+            agents = agents_in_tab(tab)
+            left = render_context(agents, cfg)
+            data = limits.all_limits(now)
+            providers = {a.get("agent") for a in agents if a.get("agent") in SUPPORTED}
+            right = render_limits(data, samples, now, providers)
+            save_samples(samples)
+            width = shutil.get_terminal_size((120, 4)).columns
+            sys.stdout.write("\x1b[2K\r" + compose(left, right, width - 1))
+            sys.stdout.flush()
+            next_draw = now + max(5, cfg["refresh_seconds"])
+        time.sleep(2)
 
 
 if __name__ == "__main__":
