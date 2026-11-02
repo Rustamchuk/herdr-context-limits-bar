@@ -1,0 +1,10 @@
+# Copy to $HERDR_PLUGIN_CONFIG_DIR/config.toml to override defaults.
+
+# Context window size used for the percentage (tokens).
+context_window_tokens = 800000
+
+# Seconds between redraws (minimum 5).
+refresh_seconds = 15
+
+# Width of each mini bar in cells.
+bar_cells = 5

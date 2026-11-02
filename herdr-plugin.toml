@@ -1,0 +1,17 @@
+id = "context-limits-bar"
+name = "Context & Limits Bar"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "Bottom bar per tab: agent context fill on the left, subscription limit windows on the right."
+platforms = ["macos", "linux"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["bash", "bin/open-bar.sh"]
+
+[[actions]]
+id = "open-bar"
+title = "Open context & limits bar in this tab"
+contexts = ["workspace", "pane"]
+platforms = ["macos", "linux"]
+command = ["bash", "bin/open-bar.sh"]
